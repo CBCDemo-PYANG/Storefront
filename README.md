@@ -1,107 +1,110 @@
-# Deployment to Kubernetes
+# Coffee Shop Demo with Quarkus
+
+This directory contains a set of demo around _reactive_ in Quarkus with Kafka.
+It demonstrates the elasticity and resilience of the system.
+
+## Build
+
+Install java dependencies (<a href="https://adoptopenjdk.net/installation.html">java 17</a> and
+<a href="https://maven.apache.org/install.html">Maven</a> are required)
+
+```bash
+mvn clean package
+```
+
+Install node.js dependencies (<a href="https://nodejs.org/en/download/">node.js</a> is required)
+
+```bash
+cd barista-node-kafka/ && npm install
+```
 
 ## Prerequisites
 
-1. You need a Kubernetes cluster and have access to it - as administrators as you need to install operators
-2. You need to be able to push images to this Kubernetes cluster. The following instruction are using the internal image registry (offered by OpenShift)
- but you can use Docker Hub
-3. You need `helm` to be installed on your machine 
- 
-## Deploying the infrastructure
+Install <a href="https://docs.docker.com/get-docker/">Docker</a>.
 
-Run:
+# Run the demo
 
-```bash
-cd kubernetes
-./install-infra.sh
-cd ..
-```
+You need to run:
 
-It installs:
+* the coffee shop service
+* one or more of the HTTP, Quarkus Kafka or Node.js Kafka baristas
 
-* Strimzi and instantiate a Kafka cluster
-* Keda
-
-It also creates the `coffee` namespace used for the application.
- 
-## Building the native executables
-
-Be sure to be authenticated to the registry you are going to push to. For instance:
+In 3 or more terminals: 
 
 ```bash
-docker login -u $KUBERNETES_USER -p  $KUBERNETES_TOKEN $REGISTRY
-```
-
-NOTE: On OpenShift, if enabled, you can access the internal registry. First, get the url using:
-`export REGISTRY=$(oc get route -n openshift-image-registry -o jsonpath='{$.items[*].spec.host}')` 
-
-From the project root run:
-
-```bash
-mvn clean package -Pnative -Dquarkus.native.container-build=true
-```
-
-This command as generated the native executable using the Linux 64 architecture.
-
-## Building and pushing the container images
-
-Run, from the project root
-
-```shell
 cd coffeeshop-service
-docker build -f src/main/docker/Dockerfile.native -t coffee/coffee-shop .
-docker tag coffee/coffee-shop $REGISTRY/coffee/coffee-shop 
-docker push $REGISTRY/coffee/coffee-shop 
-cd ..
-
-cd barista-http
-docker build -f src/main/docker/Dockerfile.native -t coffee/barista-http .
-docker tag coffee/barista-http $REGISTRY/coffee/barista-http 
-docker push $REGISTRY/coffee/barista-http 
-cd ..
-
-cd barista-kafka
-docker build -f src/main/docker/Dockerfile.native -t coffee/barista-kafka .
-docker tag coffee/barista-kafka $REGISTRY/coffee/barista-kafka 
-docker push $REGISTRY/coffee/barista-kafka 
-cd ..
+mvn quarkus:dev
 ```
 
-On OpenShift you can check the image stream using:
+This also starts the Kafka Dev Service and create the `orders` topic with 4 partitions.
 
-```shell
-$ oc get is -n coffee
-barista-http    .../coffee/barista-http    latest   About a minute ago
-barista-kafka   .../coffee/barista-kafka   latest   28 seconds ago
-coffee-shop     .../coffee/coffee-shop     latest   5 seconds ago
+#### HTTP barista
+
+```bash
+cd barista-quarkus-http
+java -jar target/quarkus-app/quarkus-run.jar
 ```
 
-## Deploy the application
+#### Quarkus Barista
 
-Open the `kubernetes/charts/values.yaml`, and if needed, edit the registry part of the image names.
-
-Then, from the project root, run:
-
-```shell 
-helm install coffee-v1 kubernetes/charts  -n coffee --wait --timeout 300s
-oc apply -f kubernetes/route.yaml -n coffee
-export COFFEE_URL="https://$(oc get route -n coffee -o jsonpath='{$.items[*].spec.host}')" 
-echo "Open url: ${COFFEE_URL}"
+```bash
+cd barista-quarkus-kafka
+mvn quarkus:dev
 ```
 
+#### Node.js Barista
 
-## Uninstalling
-
-```shell 
-cd kubernetes
-./uninstall.sh
+```bash
+cd barista-node-kafka
+npm start
 ```
 
-## Updating the charts
+# Execute with HTTP
 
-```shell
-helm uninstall coffee-v1 -n coffee
-oc delete KafkaTopic -name orders -n kafka
-oc delete KafkaTopic -name queue -n kafka
-helm install coffee-v1 kubernetes/charts  -n coffee --wait --timeout 300s
-```
+The first part of the demo shows HTTP interactions:
+
+* Barista code: `me.escoffier.quarkus.coffeeshop.BaristaResource`
+* CoffeeShop code: `me.escoffier.quarkus.coffeeshop.CoffeeShopResource#http`
+* Generated client: `me.escoffier.quarkus.coffeeshop.http.BaristaService`
+
+Order coffees by opening `http://localhost:8080`. Select the HTTP method.
+
+Stop the HTTP Barista, you can't order coffee anymore.
+
+# Execute with Kafka
+
+* Barista code: `me.escoffier.quarkus.coffeeshop.KafkaBarista`: Read from `orders`, write to `queue`
+* Bridge in the CoffeeShop: `me.escoffier.quarkus.coffeeshop.messaging.CoffeeShopResource#messaging` just enqueue the orders in a single thread (one counter)
+* Get prepared beverages on `me.escoffier.quarkus.coffeeshop.dashboard.BoardResource` and send to SSE
+
+* Open browser to http://localhost:8080/
+* Order coffee with Order coffees by opening `http://localhost:8080`. Select the messaging method.
+
+# Baristas do breaks
+
+1. Stop the Kafka barista(s)
+1. Continue to enqueue order
+1. On the dashboard, the orders are in the "IN QUEUE" state
+1. Restart the barista
+1. They are processed
+
+# 2 or more baristas are better
+
+#### Quarkus
+
+1. Build `barista-quarkus-kafka` with native image:
+   ```bash
+   mvn package -Pnative
+   ```
+1. Start a second barista with: 
+    ```bash
+    ./barista-quarkus-kafka/target/barista-kafka-1.0-SNAPSHOT-runner -Dquarkus.http.port=9999
+    ```
+1. Order more coffee
+
+#### Node.js
+
+1. Open a new terminal and run `npm  start` again.
+
+<br />
+The dashboard shows that the load is dispatched among the baristas.
